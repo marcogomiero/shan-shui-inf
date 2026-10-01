@@ -1,39 +1,33 @@
 <script id="PRNG">
+  // FIX: the old Blum Blum Shub computed s*s with s up to ~1e12, beyond 2^53:
+  // precision loss and a degraded sequence. Replaced with mulberry32 (exact 32-bit).
+  // FIX: the old hash used Math.pow(128, i), which overflows to Infinity on long
+  // seeds -> NaN. Replaced with 32-bit FNV-1a.
   var Prng = new function() {
     this.s = 1234;
-    this.p = 999979; //9887//983
-    this.q = 999983; //9967//991
-    this.m = this.p * this.q;
     this.hash = function(x) {
-      var y = window.btoa(JSON.stringify(x));
-      var z = 0;
-      for (var i = 0; i < y.length; i++) {
-        z += y.charCodeAt(i) * Math.pow(128, i);
+      var str = typeof x === "string" ? x : JSON.stringify(x);
+      var h = 0x811c9dc5;
+      for (var i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
       }
-      return z;
+      return h >>> 0;
     };
     this.seed = function(x) {
       if (x == undefined) {
         x = new Date().getTime();
       }
-      var y = 0;
-      var z = 0;
-      function redo() {
-        y = (Prng.hash(x) + z) % Prng.m;
-        z += 1;
-      }
-      while (y % Prng.p == 0 || y % Prng.q == 0 || y == 0 || y == 1) {
-        redo();
-      }
-      Prng.s = y;
-      console.log(["int seed", Prng.s]);
+      Prng.s = Prng.hash(x);
       for (var i = 0; i < 10; i++) {
         Prng.next();
       }
     };
     this.next = function() {
-      Prng.s = (Prng.s * Prng.s) % Prng.m;
-      return Prng.s / Prng.m;
+      var t = (Prng.s = (Prng.s + 0x6d2b79f5) | 0);
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
     this.test = function(f) {
       var F =
@@ -201,6 +195,9 @@
       }
     };
   }();
+  // FIX: initialize the Perlin table right away from the global seed, so it does
+  // not depend on which chunk is generated first.
+  Noise.noise(0);
 </script>
 
 <script id="PolyTools">
@@ -422,13 +419,14 @@
     return mapval(Math.random(), 0, 1, m, M);
   }
 
+  // FIX: was unbounded recursion (stack overflow risk), now a loop.
   function wtrand(func) {
-    var x = Math.random();
-    var y = Math.random();
-    if (y < func(x)) {
-      return x;
-    } else {
-      return wtrand(func);
+    while (true) {
+      var x = Math.random();
+      var y = Math.random();
+      if (y < func(x)) {
+        return x;
+      }
     }
   }
 
@@ -531,9 +529,10 @@
     if (ptlist.length == 0) {
       return "";
     }
-    vtxlist0 = [];
-    vtxlist1 = [];
-    vtxlist = [];
+    // FIX: were implicit globals
+    var vtxlist0 = [];
+    var vtxlist1 = [];
+    var vtxlist = [];
     var n0 = Math.random() * 10;
     for (var i = 1; i < ptlist.length - 1; i++) {
       var w = wid * fun(i / ptlist.length);
@@ -748,7 +747,7 @@
       var col = args.col != undefined ? args.col : "rgba(100,100,100,0.5)";
       var noi = args.noi != undefined ? args.noi : 0.5;
 
-      reso = 10;
+      var reso = 10; // FIX: was an implicit global
       var nslist = [];
       for (var i = 0; i < reso; i++) {
         nslist.push([Noise.noise(i * 0.5), Noise.noise(i * 0.5, 0.5)]);
@@ -852,7 +851,7 @@
       var col = args.col != undefined ? args.col : "rgba(100,100,100,0.5)";
       var noi = args.noi != undefined ? args.noi : 0.5;
 
-      reso = 10;
+      var reso = 10; // FIX: was an implicit global
       var nslist = [];
       for (var i = 0; i < reso; i++) {
         nslist.push([Noise.noise(i * 0.5), Noise.noise(i * 0.5, 0.5)]);
@@ -1500,7 +1499,7 @@
       var col = args.col != undefined ? args.col : "rgba(100,100,100,1)";
       var noi = args.noi != undefined ? args.noi : 0.5;
 
-      reso = 10;
+      var reso = 10; // FIX: was an implicit global
       var nslist = [];
       for (var i = 0; i < reso; i++) {
         nslist.push([Noise.noise(i * 0.5), Noise.noise(i * 0.5, 0.5)]);
@@ -3323,9 +3322,10 @@
 
   var Man = new function() {
     var expand = function(ptlist, wfun) {
-      vtxlist0 = [];
-      vtxlist1 = [];
-      vtxlist = [];
+      // FIX: were implicit globals
+      var vtxlist0 = [];
+      var vtxlist1 = [];
+      var vtxlist = [];
       var n0 = Math.random() * 10;
       for (var i = 1; i < ptlist.length - 1; i++) {
         var w = wfun(i / ptlist.length);
@@ -3876,11 +3876,15 @@
     while (xmax > MEM.xmax - MEM.cwid || xmin < MEM.xmin + MEM.cwid) {
       console.log("generating new chunk...");
 
+      // FIX: each chunk uses a seed derived from (SEED, chunk position),
+      // so its content does not depend on scroll order.
       var plan;
       if (xmax > MEM.xmax - MEM.cwid) {
+        Math.seed(SEED + "#" + MEM.xmax);
         plan = mountplanner(MEM.xmax, MEM.xmax + MEM.cwid);
         MEM.xmax = MEM.xmax + MEM.cwid;
       } else {
+        Math.seed(SEED + "#" + (MEM.xmin - MEM.cwid));
         plan = mountplanner(MEM.xmin - MEM.cwid, MEM.xmin);
         MEM.xmin = MEM.xmin - MEM.cwid;
       }
